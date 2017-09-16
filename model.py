@@ -1,5 +1,5 @@
 # Copyright 2017 Google Inc. All Rights Reserved.
-#
+# 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -514,26 +514,64 @@ class BaseModel(object):
     target_dist = tf.concat(
       [target_dist, target_dist_last], axis=2)
     # eos count has been set to 1
+   
+    # Pushing in Puru's method for precision at k. 
+    # Loss at false negatives = -log(p)
+    # Loss at false positives = -log(1-p)
+    k = 3
+    beta = 0.1	    
+
+    top_k_values, top_k_targets = tf.nn.top_k(target_dist, k=k)
+    top_k_predicted_values, top_k_predicted = tf.nn.top_k(logits, k=k)
+    false_negatives = tf.sets.set_difference(top_k_targets, top_k_predicted)
+    false_positives = tf.sets.set_difference(top_k_predicted, top_k_targets)
+
+    dense_fn = tf.sparse_tensor_to_dense(false_negatives)
+    one_hot_fn = tf.one_hot(
+	indices=dense_fn, depth=logits.get_shape()[2], on_value=1.0)
+    target_k = tf.reduce_sum(one_hot_fn, axis=2)
+
+    print("target_k vector shape: ", target_k.get_shape())
+
+    dense_fp = tf.sparse_tensor_to_dense(false_positives)
+    one_hot_fp = tf.one_hot(
+	indices=dense_fp, depth=logits.get_shape()[2], on_value=1.0)
+    predicted_k = tf.reduce_sum(one_hot_fp, axis=2)
     
+    # normalising the target distribution.
+    # Have tried softmax normalization and linear normalization.  
     target_sums = tf.reduce_sum(target_dist, axis=2, keep_dims=True)
     reci_target_sums = tf.reciprocal(target_sums)
     reci_target_sums_rep = tf.tile(
       reci_target_sums, [1, 1, tf.cast(logits.get_shape()[2], tf.int32)])
     target_dist_norm = tf.multiply(target_dist, reci_target_sums_rep)
 
-    crossent = tf.nn.softmax_cross_entropy_with_logits(
-        labels=target_dist_norm, logits=logits)
+    # target_dist_norm = tf.nn.softmax(target_dist)
     
+    one_minus_logits = tf.subtract(
+      tf.ones([max_time, self.batch_size, tf.cast(
+        logits.get_shape()[2], tf.int32)]), logits)
+
+    crossent_fn = tf.nn.softmax_cross_entropy_with_logits(
+      labels=target_k, logits=logits)
+    crossent_fp = tf.nn.softmax_cross_entropy_with_logits(
+      labels=predicted_k, logits=one_minus_logits)
+    # crossent_impl = tf.nn.softmax_cross_entropy_with_logits(
+    #     labels=target_dist_norm, logits=logits)
+    crossent_impl = (crossent_fn + crossent_fp) / 2.0
     ####
     # target_output_test = tf.reshape(target_output, [self.batch_size, max_time])
     # print("reshape successful!!!!", target_output.get_shape())
-    # crossent = tf.nn.sparse_softmax_cross_entropy_with_logits(
-    #   labels=target_output, logits=logits)
+    crossent_orig = tf.nn.sparse_softmax_cross_entropy_with_logits(
+      labels=target_output, logits=logits)
     target_weights = tf.sequence_mask(
         self.iterator.target_sequence_length, max_time, dtype=logits.dtype)
     if self.time_major:
       target_weights = tf.transpose(target_weights)
 
+    # cross entropy is a weighted combiation of original cross entropy and 
+    # the one implemented by us (crossent_impl)
+    crossent = (1.0 - beta) * crossent_orig + beta * crossent_impl
     loss = tf.reduce_sum(
         crossent * target_weights) / tf.to_float(self.batch_size)
     return loss
