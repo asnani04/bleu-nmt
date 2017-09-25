@@ -228,15 +228,43 @@ class BaseModel(object):
     with tf.variable_scope(scope or "dynamic_seq2seq", dtype=dtype):
       # Encoder
       encoder_outputs, encoder_state = self._build_encoder(hparams)
+      # print("encoder's state shape is: ", encoder_state[0].get_shape())
 
+      # IMPORTANT
+      # If number of layers > 1, encoder_state is a state tuple and I don't know
+      # how to handle it properly (how do I convert states from multiple layers
+      # into one mean and one log_sigma_sq? Have to discuss! 
+      enc_state_size = tf.cast(encoder_state[0].get_shape()[1], tf.int32)
+      vae_input = tf.concat([encoder_state[0], encoder_state[1]], axis=1)
+      # This needs to be present as a hyperparameter
+      vae_units = 32
+      num_hidden_units = 128
+      
+      mu = tf.contrib.layers.fully_connected(vae_input, vae_units,
+                                             activation_fn=None)
+      log_sigma_sq = tf.contrib.layers.fully_connected(vae_input, vae_units,
+                                                       activation_fn=None)    
+      sampled_epsilon = tf.random_normal([self.batch_size, vae_units], 0.0,
+                                         1.0, dtype=tf.float32)
+      sigma = tf.sqrt(tf.exp(log_sigma_sq))
+      latent_vars = tf.add(mu, tf.multiply(sigma, sampled_epsilon))
+
+      # Feed this back to the decoder
+      c_state = tf.contrib.layers.fully_connected(latent_vars, num_hidden_units,
+                                                  activation_fn=None)
+      h_state = tf.contrib.layers.fully_connected(latent_vars, num_hidden_units,
+                                                  activation_fn=None)
+      decoder_init_state = tf.contrib.rnn.LSTMStateTuple(c_state, h_state)
+      
+      # print("decoder init state shape: ", decoder_init_state[1].get_shape())
       ## Decoder
       logits, sample_id, final_context_state = self._build_decoder(
-          encoder_outputs, encoder_state, hparams)
+          encoder_outputs, decoder_init_state, hparams)
 
       ## Loss
       if self.mode != tf.contrib.learn.ModeKeys.INFER:
         with tf.device(model_helper.get_device_str(num_layers - 1, num_gpus)):
-          loss = self._compute_loss(logits)
+          loss = self._compute_loss(logits, mu, log_sigma_sq)
       else:
         loss = None
 
@@ -418,7 +446,7 @@ class BaseModel(object):
     """
     pass
 
-  def _compute_loss(self, logits):
+  def _compute_loss(self, logits, mu, log_sigma_sq):
     """Compute optimization loss."""
     target_output = self.iterator.target_output
     if self.time_major:
@@ -640,8 +668,7 @@ class Model(BaseModel):
             dtype=dtype,
             sequence_length=iterator.source_sequence_length,
             time_major=self.time_major)
-
-        print("encoder's state shape is: ", encoder_state[0][1].get_shape())
+        
       elif hparams.encoder_type == "bi":
         num_bi_layers = int(num_layers / 2)
         num_bi_residual_layers = int(num_residual_layers / 2)
