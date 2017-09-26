@@ -453,155 +453,21 @@ class BaseModel(object):
       target_output = tf.transpose(target_output)
     max_time = self.get_max_time(target_output)
 
-    ### experiments
-    # batch_cd_list = tf.zeros([1, tf.cast(logits.get_shape()[2], tf.int32)])
-    
-    # i = tf.constant(0)
-    # while_condition = lambda i, b: tf.less(i, self.batch_size)
-    # def body(i, batch_cd_list):
-    #   one_hot = tf.one_hot(target_output[i], logits.get_shape()[2])
-    #   dist = tf.reduce_sum(one_hot, axis=0)
-    #   cd_list = tf.divide(dist, tf.reduce_sum(dist))
-
-    #   j = tf.constant(1)
-
-    #   def while_condition_2(j, dist, cd_list):
-    #     return tf.less(j, max_time)
-      
-    #   def body_2(j, dist, cd_list):
-    #     dist = tf.subtract(dist, tf.one_hot(tf.argmax(logits[i][j-1]),
-    #                                         logits.get_shape()[2]))
-    #     cd_list = tf.concat([cd_list, tf.divide(dist, tf.reduce_sum(dist))], axis=0)
-    #     tf.Print(j, [j], message="This is j!!!!")
-    #     return [tf.add(j, 1), dist, cd_list]
-
-    #   s = tf.while_loop(while_condition_2, body_2, [j, dist, cd_list],
-    #                     shape_invariants=[j.get_shape(),
-    #                                       dist.get_shape(), tf.TensorShape([None])])
-    #   cd_list = tf.reshape(cd_list, [-1, tf.cast(logits.get_shape()[2], tf.int32)])
-
-    #   def assign1(batch_cd_list, cd_list):
-    #     batch_cd_list = cd_list
-    #     print("this is where I am" + str(cd_list.get_shape()))
-    #     return batch_cd_list
-
-    #   def assign2(batch_cd_list, cd_list):
-    #     print(batch_cd_list.get_shape())
-    #     batch_cd_list = tf.concat([batch_cd_list, cd_list], axis=0)
-    #     print("I am here as well")
-    #     return batch_cd_list
-      
-    #   batch_cd_list = tf.cond(tf.equal(i, tf.constant(0)), lambda: assign1(batch_cd_list, cd_list), lambda: assign2(batch_cd_list, cd_list))
-    #   print("see this: ", batch_cd_list)
-    #   return [tf.add(i, 1), batch_cd_list]
-    # r = tf.while_loop(while_condition, body, [i, batch_cd_list],
-    #                   shape_invariants=[i.get_shape(), tf.TensorShape([None, logits.get_shape()[2]])])
-    
-    # batch_cd = tf.reshape(batch_cd_list, [self.batch_size, max_time, tf.cast(logits.get_shape()[2], tf.int32)])
-
-    
-    # """    
-    # one_hot_target_output = tf.one_hot(target_output[0][0], logits.get_shape()[2])
-    # """
-    
-    
-    preds = tf.argmax(logits, axis=2)
-    one_hot_preds = tf.one_hot(preds, logits.get_shape()[2])
-    cum_preds = tf.cumsum(one_hot_preds, axis=0)
-    cum_preds = tf.slice(cum_preds, [0, 0, 0],
-                         [max_time-1, self.batch_size,
-                          tf.cast(logits.get_shape()[2], tf.int32)])
-    cum_preds = tf.concat(
-      [tf.zeros([1, self.batch_size, tf.cast(
-        logits.get_shape()[2], tf.int32)]), cum_preds], axis=0)
-    # Now, we have the cumulative predictions tensor. 
-    
-    one_hot_targets = tf.one_hot(target_output, logits.get_shape()[2])
-    targets_test = tf.reshape(
-      one_hot_targets, [max_time, self.batch_size, tf.cast(
-        logits.get_shape()[2], tf.int32)])
-    dist = tf.reduce_sum(one_hot_targets, axis=0, keep_dims=True)
-    
-    rep_dist = tf.tile(dist, [max_time, 1, 1])
-    target_dist = tf.subtract(rep_dist, cum_preds)
-    target_dist = tf.maximum(
-      target_dist, tf.zeros(
-        [max_time, self.batch_size, tf.cast(
-          logits.get_shape()[2], tf.int32)]))
-
-    # setting eos count to 1
-    target_dist_first = tf.slice(
-      target_dist, [0, 0, 0], [max_time, self.batch_size, 2])
-    target_dist_last = tf.slice(
-      target_dist, [0, 0, 3], [max_time, self.batch_size, tf.cast(
-        logits.get_shape()[2], tf.int32) - 3])
-
-    target_dist = tf.concat(
-      [target_dist_first, tf.ones(
-        [max_time, self.batch_size, 1])], axis=2)
-    target_dist = tf.concat(
-      [target_dist, target_dist_last], axis=2)
-    # eos count has been set to 1
-   
-    # Pushing in Puru's method for precision at k. 
-    # Loss at false negatives = -log(p)
-    # Loss at false positives = -log(1-p)
-    k = 3
-    beta = 0.1	    
-
-    top_k_values, top_k_targets = tf.nn.top_k(target_dist, k=k)
-    top_k_predicted_values, top_k_predicted = tf.nn.top_k(logits, k=k)
-    false_negatives = tf.sets.set_difference(top_k_targets, top_k_predicted)
-    false_positives = tf.sets.set_difference(top_k_predicted, top_k_targets)
-
-    dense_fn = tf.sparse_tensor_to_dense(false_negatives)
-    one_hot_fn = tf.one_hot(
-	indices=dense_fn, depth=logits.get_shape()[2], on_value=1.0)
-    target_k = tf.reduce_sum(one_hot_fn, axis=2)
-
-    print("target_k vector shape: ", target_k.get_shape())
-
-    dense_fp = tf.sparse_tensor_to_dense(false_positives)
-    one_hot_fp = tf.one_hot(
-	indices=dense_fp, depth=logits.get_shape()[2], on_value=1.0)
-    predicted_k = tf.reduce_sum(one_hot_fp, axis=2)
-    
-    # normalising the target distribution.
-    # Have tried softmax normalization and linear normalization.  
-    target_sums = tf.reduce_sum(target_dist, axis=2, keep_dims=True)
-    reci_target_sums = tf.reciprocal(target_sums)
-    reci_target_sums_rep = tf.tile(
-      reci_target_sums, [1, 1, tf.cast(logits.get_shape()[2], tf.int32)])
-    target_dist_norm = tf.multiply(target_dist, reci_target_sums_rep)
-
-    # target_dist_norm = tf.nn.softmax(target_dist)
-    
-    one_minus_logits = tf.subtract(
-      tf.ones([max_time, self.batch_size, tf.cast(
-        logits.get_shape()[2], tf.int32)]), logits)
-
-    crossent_fn = tf.nn.softmax_cross_entropy_with_logits(
-      labels=target_k, logits=logits)
-    crossent_fp = tf.nn.softmax_cross_entropy_with_logits(
-      labels=predicted_k, logits=one_minus_logits)
-    # crossent_impl = tf.nn.softmax_cross_entropy_with_logits(
-    #     labels=target_dist_norm, logits=logits)
-    crossent_impl = (crossent_fn + crossent_fp) / 2.0
-    ####
-    # target_output_test = tf.reshape(target_output, [self.batch_size, max_time])
-    # print("reshape successful!!!!", target_output.get_shape())
-    crossent_orig = tf.nn.sparse_softmax_cross_entropy_with_logits(
+    crossent = tf.nn.sparse_softmax_cross_entropy_with_logits(
       labels=target_output, logits=logits)
     target_weights = tf.sequence_mask(
         self.iterator.target_sequence_length, max_time, dtype=logits.dtype)
     if self.time_major:
       target_weights = tf.transpose(target_weights)
 
-    # cross entropy is a weighted combiation of original cross entropy and 
-    # the one implemented by us (crossent_impl)
-    crossent = (1.0 - beta) * crossent_orig + beta * crossent_impl
+    our_dist = tf.contrib.distributions.MultivariateNormalDiag(mu, tf.sqrt(tf.exp(log_sigma_sq)))
+    target_dist = tf.contrib.distributions.MultivariateNormalDiag(
+      tf.zeros([self.batch_size, tf.cast(mu.get_shape()[-1], tf.int32)]),
+      tf.ones([self.batch_size, tf.cast(mu.get_shape()[-1], tf.int32)]))
+    kl_divergence = tf.contrib.distributions.kl(our_dist, target_dist)                                                          
+    # kl_divergence = -0.5 * tf.reduce_sum(1.0 + log_sigma_sq - tf.square(mu) - tf.exp(log_sigma_sq))
     loss = tf.reduce_sum(
-        crossent * target_weights) / tf.to_float(self.batch_size)
+        crossent * target_weights + kl_divergence) / tf.to_float(self.batch_size)
     return loss
 
   def _get_infer_summary(self, hparams):
