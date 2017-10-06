@@ -495,6 +495,8 @@ class BaseModel(object):
     dist = tf.reduce_sum(one_hot_targets, axis=0, keep_dims=True)
     
     rep_dist = tf.tile(dist, [max_time, 1, 1])
+    # target dist: the actual residue distribution
+    
     target_dist = tf.subtract(rep_dist, cum_preds)
     target_dist = tf.maximum(
       target_dist, tf.zeros(
@@ -518,33 +520,55 @@ class BaseModel(object):
     # Pushing in Puru's method for precision at k. 
     # Loss at false negatives = -log(p)
     # Loss at false positives = -log(1-p)
-    k = 3
-    beta = 0.1	    
+    k = 1
+    beta = 0.9	    
 
-    top_k_values, top_k_targets = tf.nn.top_k(target_dist, k=k)
+    # top_k_values, top_k_targets = tf.nn.top_k(one_hot_targets, k=k)
+    # compute the top k predicted labels and their probabilities
     top_k_predicted_values, top_k_predicted = tf.nn.top_k(logits, k=k)
-    false_negatives = tf.sets.set_difference(top_k_targets, top_k_predicted)
-    false_positives = tf.sets.set_difference(top_k_predicted, top_k_targets)
+    # set all the non-zero elements in the residue (target_dist) to 1 
+    residue_dist = tf.minimum(target_dist, tf.ones(
+      [max_time, self.batch_size, tf.cast(logits.get_shape()[2], tf.int32)]))
+    # get top k predicted indices in a binary tensor
+    one_hot_top_k_pred = tf.one_hot(
+      indices=top_k_predicted, depth=logits.get_shape()[2], on_value=1.0)
+    binary_top_k_pred = tf.reduce_sum(one_hot_top_k_pred, axis=2)
+    
+    # False positives - set difference between top k predictions and residue
+    predicted_k = tf.maximum(tf.zeros(
+      [max_time, self.batch_size, tf.cast(logits.get_shape()[2], tf.int32)]
+      ), tf.subtract(binary_top_k_pred, residue_dist))
 
-    dense_fn = tf.sparse_tensor_to_dense(false_negatives)
-    one_hot_fn = tf.one_hot(
-	indices=dense_fn, depth=logits.get_shape()[2], on_value=1.0)
-    target_k = tf.reduce_sum(one_hot_fn, axis=2)
+    # pushing up the words already predicted highly and in the residue 
+    relevant_logits = tf.multiply(residue_dist, logits)
+    top_k_values, top_k_targets = tf.nn.top_k(relevant_logits, k=k)
+    one_hot_top_k_targets = tf.one_hot(
+      indices=top_k_targets, depth=logits.get_shape()[2], on_value=1.0)
+    # target_k: binary vectors representing the ones to be pushed up (like fn)
+    target_k = tf.reduce_sum(one_hot_top_k_targets, axis=2)
+    
+    # false_negatives = tf.sets.set_difference(top_k_targets, top_k_predicted)
+    # false_positives = tf.sets.set_difference(top_k_predicted, top_k_targets)
 
-    print("target_k vector shape: ", target_k.get_shape())
+    # dense_fn = tf.sparse_tensor_to_dense(false_negatives)
+    # one_hot_fn = tf.one_hot(
+    #     indices=dense_fn, depth=logits.get_shape()[2], on_value=1.0)
+    # target_k = tf.reduce_sum(one_hot_fn, axis=2)
 
-    dense_fp = tf.sparse_tensor_to_dense(false_positives)
-    one_hot_fp = tf.one_hot(
-	indices=dense_fp, depth=logits.get_shape()[2], on_value=1.0)
-    predicted_k = tf.reduce_sum(one_hot_fp, axis=2)
+    # print("target_k vector shape: ", target_k.get_shape())
+
+    # dense_fp = tf.sparse_tensor_to_dense(false_positives)
+    # one_hot_fp = tf.one_hot(
+    #     indices=dense_fp, depth=logits.get_shape()[2], on_value=1.0)
+    # predicted_k = tf.reduce_sum(one_hot_fp, axis=2)
     
     # normalising the target distribution.
     # Have tried softmax normalization and linear normalization.  
-    target_sums = tf.reduce_sum(target_dist, axis=2, keep_dims=True)
-    reci_target_sums = tf.reciprocal(target_sums)
-    reci_target_sums_rep = tf.tile(
-      reci_target_sums, [1, 1, tf.cast(logits.get_shape()[2], tf.int32)])
-    target_dist_norm = tf.multiply(target_dist, reci_target_sums_rep)
+    # target_sums = tf.reduce_sum(target_dist, axis=2, keep_dims=True)
+    # reci_target_sums = tf.reciprocal(target_sums)
+    # reci_target_sums_rep = tf.tile(
+    #   reci_target_sums, [1, 1, tf.cast(logits.get_shape()[2], tf.int32)])
+    # target_dist_norm = tf.multiply(target_dist, reci_target_sums_rep)
 
     # target_dist_norm = tf.nn.softmax(target_dist)
     
@@ -556,9 +580,10 @@ class BaseModel(object):
       labels=target_k, logits=logits)
     crossent_fp = tf.nn.softmax_cross_entropy_with_logits(
       labels=predicted_k, logits=one_minus_logits)
+    alpha = 0.5
     # crossent_impl = tf.nn.softmax_cross_entropy_with_logits(
     #     labels=target_dist_norm, logits=logits)
-    crossent_impl = (crossent_fn + crossent_fp) / 2.0
+    crossent_impl = (alpha * crossent_fn + (1.0 - alpha) * crossent_fp) / k
     ####
     # target_output_test = tf.reshape(target_output, [self.batch_size, max_time])
     # print("reshape successful!!!!", target_output.get_shape())
@@ -569,7 +594,7 @@ class BaseModel(object):
     if self.time_major:
       target_weights = tf.transpose(target_weights)
 
-    # cross entropy is a weighted combiation of original cross entropy and 
+    # cross entropy is a weighted combination of original cross entropy and 
     # the one implemented by us (crossent_impl)
     crossent = (1.0 - beta) * crossent_orig + beta * crossent_impl
     loss = tf.reduce_sum(
