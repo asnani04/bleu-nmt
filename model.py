@@ -520,7 +520,7 @@ class BaseModel(object):
     # Pushing in Puru's method for precision at k. 
     # Loss at false negatives = -log(p)
     # Loss at false positives = -log(1-p)
-    k = 1
+    k = 3
     beta = 0.9	    
 
     # top_k_values, top_k_targets = tf.nn.top_k(one_hot_targets, k=k)
