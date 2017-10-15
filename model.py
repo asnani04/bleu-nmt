@@ -71,7 +71,9 @@ class BaseModel(object):
     self.num_layers = hparams.num_layers
     self.num_gpus = hparams.num_gpus
     self.time_major = hparams.time_major
-
+    self.k = hparams.k
+    self.alpha = hparams.alpha
+    
     # Initializer
     initializer = model_helper.get_initializer(
         hparams.init_op, hparams.random_seed, hparams.init_weight)
@@ -117,9 +119,15 @@ class BaseModel(object):
           "decay_factor %g" % (hparams.start_decay_step, hparams.learning_rate,
                                hparams.decay_steps, hparams.decay_factor))
     self.global_step = tf.Variable(0, trainable=False)
-
+    
     params = tf.trainable_variables()
 
+    beta_decay_denominator = tf.divide(hparams.beta_decay_steps, tf.constant(5))
+    self.beta = tf.nn.sigmoid(tf.divide(
+      tf.cast(tf.subtract(self.global_step, hparams.beta_decay_steps),
+              tf.float64), beta_decay_denominator))
+    self.beta = tf.cast(self.beta, tf.float32)
+    
     # Gradients and SGD update operation for training the model.
     # Arrage for the embedding vars to appear at the beginning.
     if self.mode == tf.contrib.learn.ModeKeys.TRAIN:
@@ -143,8 +151,10 @@ class BaseModel(object):
         self.learning_rate = tf.constant(hparams.learning_rate)
         opt = tf.train.AdamOptimizer(self.learning_rate)
 
+      loss_impl = (self.alpha * self.train_loss[0] + (1.0 - self.alpha) * self.train_loss[1]) / self.k
+      self.total_loss = self.beta * self.train_loss[2] + (1.0 - self.beta) * loss_impl 
       gradients = tf.gradients(
-          self.train_loss,
+          self.total_loss,
           params,
           colocate_gradients_with_ops=hparams.colocate_gradients_with_ops)
 
@@ -157,7 +167,7 @@ class BaseModel(object):
       # Summary
       self.train_summary = tf.summary.merge([
           tf.summary.scalar("lr", self.learning_rate),
-          tf.summary.scalar("train_loss", self.train_loss),
+          tf.summary.scalar("train_loss", self.total_loss),
       ] + gradient_norm_summary)
 
     if self.mode == tf.contrib.learn.ModeKeys.INFER:
@@ -424,7 +434,7 @@ class BaseModel(object):
     if self.time_major:
       target_output = tf.transpose(target_output)
     max_time = self.get_max_time(target_output)
-
+    
     ### experiments
     # batch_cd_list = tf.zeros([1, tf.cast(logits.get_shape()[2], tf.int32)])
     
@@ -511,7 +521,7 @@ class BaseModel(object):
         logits.get_shape()[2], tf.int32) - 3])
 
     target_dist = tf.concat(
-      [target_dist_first, tf.ones(
+      [target_dist_first, tf.zeros(
         [max_time, self.batch_size, 1])], axis=2)
     target_dist = tf.concat(
       [target_dist, target_dist_last], axis=2)
@@ -520,20 +530,20 @@ class BaseModel(object):
     # Pushing in Puru's method for precision at k. 
     # Loss at false negatives = -log(p)
     # Loss at false positives = -log(1-p)
-    k = 3
+    k = self.k
     beta = 0.9	    
 
-    # top_k_values, top_k_targets = tf.nn.top_k(one_hot_targets, k=k)
+    # top_k_values, top_k_targets = tf.nn.top_k(target_dist, k=k)
     # compute the top k predicted labels and their probabilities
     top_k_predicted_values, top_k_predicted = tf.nn.top_k(logits, k=k)
     # set all the non-zero elements in the residue (target_dist) to 1 
-    residue_dist = tf.minimum(target_dist, tf.ones(
-      [max_time, self.batch_size, tf.cast(logits.get_shape()[2], tf.int32)]))
-    # get top k predicted indices in a binary tensor
-    one_hot_top_k_pred = tf.one_hot(
-      indices=top_k_predicted, depth=logits.get_shape()[2], on_value=1.0)
-    binary_top_k_pred = tf.reduce_sum(one_hot_top_k_pred, axis=2)
     
+    residue_dist = tf.minimum(target_dist, 1.0)
+    # get top k predicted indices in a binary tensor
+    # one_hot_top_k_pred = 
+    binary_top_k_pred = tf.reduce_sum(tf.one_hot(
+      indices=top_k_predicted, depth=logits.get_shape()[2], on_value=1.0), axis=2)
+    # print("Shape of binary_top_k_pred: ", binary_top_k_pred.get_shape()) 
     # False positives - set difference between top k predictions and residue
     predicted_k = tf.maximum(tf.zeros(
       [max_time, self.batch_size, tf.cast(logits.get_shape()[2], tf.int32)]
@@ -546,7 +556,10 @@ class BaseModel(object):
       indices=top_k_targets, depth=logits.get_shape()[2], on_value=1.0)
     # target_k: binary vectors representing the ones to be pushed up (like fn)
     target_k = tf.reduce_sum(one_hot_top_k_targets, axis=2)
-    
+   
+    # this line only here for debugging purposes
+    # predicted_k = binary_top_k_pred 
+    # target_k = logits
     # false_negatives = tf.sets.set_difference(top_k_targets, top_k_predicted)
     # false_positives = tf.sets.set_difference(top_k_predicted, top_k_targets)
 
@@ -596,10 +609,12 @@ class BaseModel(object):
 
     # cross entropy is a weighted combination of original cross entropy and 
     # the one implemented by us (crossent_impl)
-    crossent = (1.0 - beta) * crossent_orig + beta * crossent_impl
-    loss = tf.reduce_sum(
-        crossent * target_weights) / tf.to_float(self.batch_size)
-    return loss
+    # crossent = (1.0 - beta) * crossent_orig + beta * crossent_impl
+    crossent_fn = tf.reduce_sum(crossent_fn) / tf.to_float(self.batch_size)
+    crossent_fp = tf.reduce_sum(crossent_fp) / tf.to_float(self.batch_size)    
+    crossent_orig = tf.reduce_sum(
+        crossent_orig * target_weights) / tf.to_float(self.batch_size)
+    return [crossent_fn, crossent_fp, crossent_orig]
 
   def _get_infer_summary(self, hparams):
     return tf.no_op()
@@ -637,6 +652,7 @@ class Model(BaseModel):
 
   def _build_encoder(self, hparams):
     """Build an encoder."""
+    print(self.mode)
     num_layers = hparams.num_layers
     num_residual_layers = hparams.num_residual_layers
 

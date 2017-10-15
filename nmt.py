@@ -93,6 +93,18 @@ def add_arguments(parser):
                       help="How frequent we decay")
   parser.add_argument("--decay_factor", type=float, default=0.98,
                       help="How much we decay.")
+  parser.add_argument("--beta", type=float, default=1.00,
+                      help="""\
+                      Initial value of beta - 
+                      1.0 implies full cross-entropy loss""")
+  parser.add_argument("--beta_decay_factor", type=float, default=0.95,
+                      help="How much we decay beta.")
+  parser.add_argument("--beta_decay_steps", type=int, default=2000,
+                      help="How frequent we decay beta")
+  parser.add_argument("--alpha", type=float, default=0.50,
+                      help="How much of impl loss is crossent_fn")
+  parser.add_argument("--k", type=int, default=3,
+                      help="Number of false positives / negatives to consider")
   parser.add_argument(
       "--num_train_steps", type=int, default=12000, help="Num steps to train.")
   parser.add_argument("--colocate_gradients_with_ops", type="bool", nargs="?",
@@ -266,6 +278,11 @@ def create_hparams(flags):
       start_decay_step=flags.start_decay_step,
       decay_factor=flags.decay_factor,
       decay_steps=flags.decay_steps,
+      beta=flags.beta,
+      beta_decay_steps=flags.beta_decay_steps,
+      beta_decay_factor=flags.beta_decay_factor,
+      alpha=flags.alpha,
+      k=flags.k,
       colocate_gradients_with_ops=flags.colocate_gradients_with_ops,
 
       # Data constraints

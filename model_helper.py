@@ -436,7 +436,7 @@ def compute_perplexity(model, sess, name):
   while True:
     try:
       loss, predict_count, batch_size = model.eval(sess)
-      total_loss += loss * batch_size
+      total_loss += loss[2] * batch_size
       total_predict_count += predict_count
     except tf.errors.OutOfRangeError:
       break

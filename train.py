@@ -220,6 +220,7 @@ def train(hparams, scope=None, target_session=""):
 
   # This is the training loop.
   step_time, checkpoint_loss, checkpoint_predict_count = 0.0, 0.0, 0.0
+  checkpoint_fn, checkpoint_fp = 0.0, 0.0
   checkpoint_total_count = 0.0
   speed, train_ppl = 0.0, 0.0
   start_train_time = time.time()
@@ -268,7 +269,9 @@ def train(hparams, scope=None, target_session=""):
     # update statistics
     step_time += (time.time() - start_time)
 
-    checkpoint_loss += (step_loss * batch_size)
+    checkpoint_loss += (step_loss[2] * batch_size)
+    checkpoint_fn += (step_loss[0] * batch_size)
+    checkpoint_fp += (step_loss[1] * batch_size)
     checkpoint_predict_count += step_predict_count
     checkpoint_total_count += float(step_word_count)
 
@@ -278,14 +281,18 @@ def train(hparams, scope=None, target_session=""):
 
       # Print statistics for the previous epoch.
       avg_step_time = step_time / steps_per_stats
+      ce_loss = float(checkpoint_loss / checkpoint_predict_count)
+      fn_loss = float(checkpoint_fn / checkpoint_predict_count)
+      fp_loss = float(checkpoint_fp / checkpoint_predict_count)
       train_ppl = utils.safe_exp(checkpoint_loss / checkpoint_predict_count)
       speed = checkpoint_total_count / (1000 * step_time)
       utils.print_out(
           "  global step %d lr %g "
-          "step-time %.2fs wps %.2fK ppl %.2f %s" %
+          "step-time %.2fs wps %.2fK ppl %.2f fn %.2f fp %.2f ce %.2f %s" %
           (global_step,
            loaded_train_model.learning_rate.eval(session=train_sess),
-           avg_step_time, speed, train_ppl, _get_best_results(hparams)),
+           avg_step_time, speed, train_ppl, fn_loss, fp_loss,
+           ce_loss, _get_best_results(hparams)),
           log_f)
       if math.isnan(train_ppl):
         break
