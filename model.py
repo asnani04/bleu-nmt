@@ -73,6 +73,7 @@ class BaseModel(object):
     self.time_major = hparams.time_major
     self.k = hparams.k
     self.alpha = hparams.alpha
+    # self.alpha = tf.constant(1.0)
     
     # Initializer
     initializer = model_helper.get_initializer(
@@ -123,9 +124,10 @@ class BaseModel(object):
     params = tf.trainable_variables()
 
     beta_decay_denominator = tf.divide(hparams.beta_decay_steps, tf.constant(5))
+    # self.beta = tf.constant(0.0)	    
     self.beta = tf.nn.sigmoid(tf.divide(
-      tf.cast(tf.subtract(self.global_step, hparams.beta_decay_steps),
-              tf.float64), beta_decay_denominator))
+    tf.cast(tf.subtract(hparams.beta_decay_steps, self.global_step),
+            tf.float64), beta_decay_denominator))
     self.beta = tf.cast(self.beta, tf.float32)
     
     # Gradients and SGD update operation for training the model.
@@ -151,8 +153,22 @@ class BaseModel(object):
         self.learning_rate = tf.constant(hparams.learning_rate)
         opt = tf.train.AdamOptimizer(self.learning_rate)
 
-      loss_impl = (self.alpha * self.train_loss[0] + (1.0 - self.alpha) * self.train_loss[1]) / self.k
-      self.total_loss = self.beta * self.train_loss[2] + (1.0 - self.beta) * loss_impl 
+
+      self.loss_impl = (self.alpha * self.train_loss[0] + (1.0 - self.alpha) * self.train_loss[1]) / self.k
+      self.total_loss = self.beta * self.train_loss[2] + (1.0 - self.beta) * self.loss_impl
+
+      # Stochastic choice of loss function to use for this step.
+
+      def orig():
+        return self.train_loss[2]
+
+      def impl():
+        return self.loss_impl
+
+      random_value = tf.random_uniform(
+        [], minval=0.0, maxval=1.0, dtype=tf.float32)
+      self.total_loss = tf.cond(random_value < self.beta, orig, impl)
+
       gradients = tf.gradients(
           self.total_loss,
           params,
