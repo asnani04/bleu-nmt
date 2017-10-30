@@ -124,10 +124,10 @@ class BaseModel(object):
     params = tf.trainable_variables()
 
     beta_decay_denominator = tf.divide(hparams.beta_decay_steps, tf.constant(5))
-    # self.beta = tf.constant(0.0)	    
-    self.beta = tf.nn.sigmoid(tf.divide(
-    tf.cast(tf.subtract(hparams.beta_decay_steps, self.global_step),
-            tf.float64), beta_decay_denominator))
+    self.beta = tf.constant(1.0)	    
+    # self.beta = tf.nn.sigmoid(tf.divide(
+    # tf.cast(tf.subtract(hparams.beta_decay_steps, self.global_step),
+    #         tf.float64), beta_decay_denominator))
     self.beta = tf.cast(self.beta, tf.float32)
     
     # Gradients and SGD update operation for training the model.
@@ -159,15 +159,15 @@ class BaseModel(object):
 
       # Stochastic choice of loss function to use for this step.
 
-      def orig():
-        return self.train_loss[2]
+      # def orig():
+      #   return self.train_loss[2]
 
-      def impl():
-        return self.loss_impl
+      # def impl():
+      #   return self.loss_impl
 
-      random_value = tf.random_uniform(
-        [], minval=0.0, maxval=1.0, dtype=tf.float32)
-      self.total_loss = tf.cond(random_value < self.beta, orig, impl)
+      # random_value = tf.random_uniform(
+      #   [], minval=0.0, maxval=1.0, dtype=tf.float32)
+      # self.total_loss = tf.cond(random_value < self.beta, orig, impl)
 
       gradients = tf.gradients(
           self.total_loss,
@@ -611,7 +611,7 @@ class BaseModel(object):
       labels=predicted_k, logits=one_minus_logits)
     alpha = 0.5
     # crossent_impl = tf.nn.softmax_cross_entropy_with_logits(
-    #     labels=target_dist_norm, logits=logits)
+  #     labels=target_dist_norm, logits=logits)
     crossent_impl = (alpha * crossent_fn + (1.0 - alpha) * crossent_fp) / k
     ####
     # target_output_test = tf.reshape(target_output, [self.batch_size, max_time])
@@ -623,13 +623,36 @@ class BaseModel(object):
     if self.time_major:
       target_weights = tf.transpose(target_weights)
 
+    # beta changing across time steps in a sentence
+    sent_lengths = tf.cast(tf.count_nonzero(target_weights, axis=0, keep_dims=True), tf.float32)
+    # beta changes according to a normal distribution here
+    # beta_dist = tf.contrib.distributions.Normal(loc=sent_lengths / 2, scale=1.0)
+    medians = tf.reshape(sent_lengths / 2, [1, self.batch_size])
+    medians = tf.tile(medians, [max_time, 1])
+    
+    all_indices = tf.cast(tf.range(max_time), tf.float32)
+    all_indices = tf.reshape(all_indices, [max_time, 1])
+    all_indices = tf.tile(all_indices, [1, self.batch_size])
+    # For imposing a normally varying word weight
+    # index_weights = beta_dist.prob(all_indices)
+    # orig_weights = 1.0 - index_weights
+
+    # For imposing a linearly varying word weight -
+    # 1.0 on ends of the sentence, 0.5 in the center
+    orig_weights = tf.maximum(
+      1.0 - all_indices / (2 * medians), all_indices / (2 * medians))
+    index_weights = 1.0 - orig_weights
+    # print(all_indices.get_shape())
+    
     # cross entropy is a weighted combination of original cross entropy and 
     # the one implemented by us (crossent_impl)
     # crossent = (1.0 - beta) * crossent_orig + beta * crossent_impl
-    crossent_fn = tf.reduce_sum(crossent_fn) / tf.to_float(self.batch_size)
-    crossent_fp = tf.reduce_sum(crossent_fp) / tf.to_float(self.batch_size)    
+    crossent_fn = tf.reduce_sum(
+      crossent_fn * target_weights * index_weights) / tf.to_float(self.batch_size)
+    crossent_fp = tf.reduce_sum(
+      crossent_fp * target_weights * index_weights) / tf.to_float(self.batch_size)    
     crossent_orig = tf.reduce_sum(
-        crossent_orig * target_weights) / tf.to_float(self.batch_size)
+        crossent_orig * target_weights * orig_weights) / tf.to_float(self.batch_size)
     return [crossent_fn, crossent_fp, crossent_orig]
 
   def _get_infer_summary(self, hparams):
