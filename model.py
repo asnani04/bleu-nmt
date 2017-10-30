@@ -639,10 +639,24 @@ class BaseModel(object):
 
     # For imposing a linearly varying word weight -
     # 1.0 on ends of the sentence, 0.5 in the center
-    orig_weights = tf.maximum(
-      1.0 - all_indices / (2 * medians), all_indices / (2 * medians))
-    index_weights = 1.0 - orig_weights
+    # orig_weights = tf.maximum(
+    #   1.0 - all_indices / (2 * medians), all_indices / (2 * medians))
+    # index_weights = 1.0 - orig_weights
     # print(all_indices.get_shape())
+
+    # For imposing a piecewise constant word weight -
+    # pieces 1 & 5, 2 & 4, and 3
+    first_piece = tf.cast(tf.less(all_indices, medians*0.4), tf.float32)
+    first_piece = first_piece + tf.cast(tf.greater(all_indices, medians*1.6), tf.float32)
+    second_piece = tf.cast(tf.less(all_indices, medians*0.8), tf.float32)
+    second_piece = second_piece + tf.cast(tf.greater(all_indices, medians*1.2), tf.float32)
+    second_piece = second_piece - first_piece
+    third_piece = tf.cast(tf.less(all_indices, medians), tf.float32)
+    third_piece = third_piece + tf.cast(tf.greater(all_indices, medians), tf.float32)
+    third_piece = third_piece - second_piece - first_piece
+    
+    index_weights = 1.0 * first_piece + 0.7 * second_piece + 0.5 * third_piece
+    orig_weights = 1.0 - index_weights
     
     # cross entropy is a weighted combination of original cross entropy and 
     # the one implemented by us (crossent_impl)
